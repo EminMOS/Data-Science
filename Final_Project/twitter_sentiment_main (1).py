@@ -22,6 +22,15 @@ import os
 # Text processing
 import re
 import string
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import nltk
+try:
+    nltk.download('punkt_tab')
+    nltk.download('stopwords')
+    print('nltk data downloaded successfully.')
+except LookupError:
+    print('FAILED nltk data downloaded.')
 
 # Feature engineering
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -46,88 +55,45 @@ from tensorflow import keras
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import (Embedding, Conv1D, MaxPooling1D, 
-                                    LSTM, Dense, Dropout, BatchNormalization)
+from tensorflow.keras.layers import (Embedding, Conv1D, MaxPooling1D,
+                                     LSTM, Dense, Dropout, BatchNormalization)
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
 
-# Resolve project paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DATA_PATH = os.path.join(SCRIPT_DIR, 'Twitter_Data.csv')
-DEFAULT_SAMPLE_SIZE = 100
+
+# Set variables
+DATA_PATH = '../Draft/twitter_data.csv'
+SAMPLE_SIZE = 1000 # Set to an integer for sampling, or None for full dataset
 
 # Set style and warnings
 warnings.filterwarnings('ignore')
 plt.style.use('seaborn-v0_8-darkgrid')
 sns.set_palette("husl")
 
-# Basic English stopwords list (instead of NLTK)
-ENGLISH_STOPWORDS = {
-    'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', "you're", 
-    "you've", "you'll", "you'd", 'your', 'yours', 'yourself', 'yourselves', 'he', 
-    'him', 'his', 'himself', 'she', "she's", 'her', 'hers', 'herself', 'it', 
-    "it's", 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves', 
-    'what', 'which', 'who', 'whom', 'this', 'that', "that'll", 'these', 'those', 
-    'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 
-    'having', 'do', 'does', 'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 
-    'or', 'because', 'as', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 
-    'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 
-    'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 
-    'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 
-    'why', 'how', 'all', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 
-    'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 
-    's', 't', 'can', 'will', 'just', 'don', "don't", 'should', "should've", 'now', 
-    'd', 'll', 'm', 'o', 're', 've', 'y', 'ain', 'aren', "aren't", 'couldn', 
-    "couldn't", 'didn', "didn't", 'doesn', "doesn't", 'hadn', "hadn't", 'hasn', 
-    "hasn't", 'haven', "haven't", 'isn', "isn't", 'ma', 'mightn', "mightn't", 
-    'mustn', "mustn't", 'needn', "needn't", 'shan', "shan't", 'shouldn', "shouldn't", 
-    'wasn', "wasn't", 'weren', "weren't", 'won', "won't", 'wouldn', "wouldn't"
-}
 
-def get_num_samples(data):
-    """Return the number of samples for dense or sparse matrices."""
-    shape = getattr(data, 'shape', None)
-    if shape is not None:
-        try:
-            return shape[0]
-        except (TypeError, IndexError):
-            pass
-    try:
-        return len(data)
-    except TypeError as exc:
-        raise TypeError(f"Unable to determine sample size for object of type {type(data)}") from exc
 
 class TwitterSentimentAnalyzer:
     """Main class for Twitter Sentiment Analysis Pipeline"""
     
-    def __init__(self, data_path, random_state=42, sample_size=None, development_mode=False):
+    def __init__(self, data_path, random_state=42, sample_size=None):
         """
         Initialize the analyzer with data path and random state
         
         Args:
             data_path: Path to the Twitter dataset CSV file
             random_state: Random state for reproducibility
-            sample_size: Number of samples to use (None for full dataset)
-            development_mode: If True, automatically uses small sample for fast testing
         """
         self.data_path = data_path
         self.random_state = random_state
-        self.full_dataset_requested = bool(sample_size is not None and sample_size <= 0)
-        self.sample_size = None if self.full_dataset_requested else sample_size
-        self.development_mode = development_mode
+        self.sample_size = SAMPLE_SIZE
         self.df = None
-        self.df_full = None  # Store full dataset
         self.X_train = None
         self.X_test = None
         self.y_train = None
         self.y_test = None
         self.models = {}
         self.results = {}
-        self.stop_words = ENGLISH_STOPWORDS
-        
-        # If development mode, set default sample size
-        if self.development_mode and self.sample_size is None and not self.full_dataset_requested:
-            self.sample_size = 1000  # Default for dev mode
+        self.stop_words = set(stopwords.words('english'))
         
     def load_data(self):
         """Load the Twitter dataset"""
@@ -138,67 +104,74 @@ class TwitterSentimentAnalyzer:
         self.df = pd.read_csv(self.data_path)
         print(f"Dataset shape: {self.df.shape}")
         print(f"Columns: {self.df.columns.tolist()}")
-        print(f"\nFirst 3 rows:")
+        print(f"\nFirst 5 rows:")
         print(self.df.head(3))
         
         return self.df
-    
-    def sample_dataset(self, force_sample_size=None):
+
+    def sample_dataset(self):
         """
         Sample the dataset for faster processing during development/testing
-        
-        Args:
-            force_sample_size: Override the instance sample_size if provided
-            
-        Returns:
-            None (modifies self.df in place)
         """
-        sample_size = force_sample_size or self.sample_size
-        
+        sample_size = self.sample_size
+
         if sample_size is None:
-            print("\nUsing FULL dataset for training")
+            print("\n📊 Using FULL dataset for training")
             return
-        
-        # Store the full dataset if not already stored
-        if self.df_full is None:
-            self.df_full = self.df.copy()
-        
+
         # Ensure we don't sample more than available
         actual_sample_size = min(sample_size, len(self.df))
-        
+
         print("\n" + "=" * 80)
         print("DATASET SAMPLING FOR FASTER PROCESSING")
         print("=" * 80)
         print(f"Original dataset size: {len(self.df):,} samples")
         print(f"Sampling to: {actual_sample_size:,} samples")
-        
-        # Drop missing values first to ensure stratified sampling works
-        df_clean = self.df.dropna(subset=['category'])
-        df_clean['category'] = df_clean['category'].astype(int)
-        
+
         # Check if we have enough samples per class for stratified sampling
-        min_class_count = df_clean['category'].value_counts().min()
-        
-        if actual_sample_size > len(df_clean):
-            actual_sample_size = len(df_clean)
+        if actual_sample_size > len(self.df):
+            actual_sample_size = len(self.df)
             print(f"Adjusted sample size to available data: {actual_sample_size:,}")
-        
-        # Use stratified sampling to maintain class distribution
-        if min_class_count >= 3 and actual_sample_size >= 30:
-            # Can do stratified sampling
-            from sklearn.model_selection import train_test_split
-            _, self.df = train_test_split(
-                df_clean, 
-                test_size=actual_sample_size/len(df_clean),
-                stratify=df_clean['category'],
+
+        category_counts = self.df['category'].value_counts()
+        required_classes = {-1, 0, 1}
+
+        # Find the count of the minority class (N_min)
+        min_samples = category_counts.min()
+
+        # Calculate the maximum perfectly balanced total size (N_balanced_max)
+        N_balanced_max = min_samples * len(required_classes)
+        # Calculate the count required per class to meet actual_sample_size
+        N_per_class_desired = actual_sample_size // len(required_classes)
+        N_target = min(min_samples, N_per_class_desired)
+        # The final size will be N_target * 3
+        final_balanced_size = N_target * len(required_classes)
+
+        # 2. Undersample each class to the minority size
+        balanced_df_list = []
+
+        for category in required_classes:
+            # Check if the category exists in the DataFrame to prevent errors
+            if category in category_counts.index:
+                category_df = self.df[self.df['category'] == category]
+
+                # Randomly sample 'min_samples' from this category
+                sampled_category_df = category_df.sample(
+                    n=N_target,
+                    random_state=self.random_state
+                )
+                balanced_df_list.append(sampled_category_df)
+
+        # 3. Combine the sampled datasets and shuffle
+        if balanced_df_list:
+            self.df = pd.concat(balanced_df_list).sample(
+                frac=1, # Sample 100% of the combined data to shuffle it
                 random_state=self.random_state
-            )
-            print("✓ Used stratified sampling to maintain class distribution")
-        else:
-            # Simple random sampling
-            self.df = df_clean.sample(n=actual_sample_size, random_state=self.random_state)
-            print("✓ Used random sampling (dataset too small for stratified sampling)")
-        
+            ).reset_index(drop=True)
+
+        print(f"\nTarget count per class for balancing: {N_target}")
+        print(f"Final dataset size adjusted to: {final_balanced_size:,} samples (balanced)")
+
         # Show new distribution
         print("\nSampled dataset distribution:")
         sentiment_map = {-1: 'Negative', 0: 'Neutral', 1: 'Positive'}
@@ -207,59 +180,56 @@ class TwitterSentimentAnalyzer:
             if count > 0:
                 percentage = (count / len(self.df)) * 100
                 print(f"   {sentiment_map[cat]:10s}: {count:6d} ({percentage:5.2f}%)")
-        
+
         print(f"\nNew working dataset shape: {self.df.shape}")
-    
+        print(f"Columns: {self.df.columns.tolist()}")
+
     def perform_eda(self):
         """Perform Exploratory Data Analysis"""
         print("\n" + "=" * 80)
         print("EXPLORATORY DATA ANALYSIS")
         print("=" * 80)
-        
+
         # Basic info
         print("\n1. Dataset Info:")
         print(self.df.info())
-        
+
         # Missing values
         print(f"\n2. Missing values:\n{self.df.isnull().sum()}")
-        
+
         # Class distribution
         print("\n3. Sentiment Distribution:")
         sentiment_counts = self.df['category'].value_counts().sort_index()
         sentiment_map = {-1: 'Negative', 0: 'Neutral', 1: 'Positive'}
-        
+
         for cat, count in sentiment_counts.items():
             cat_int = int(cat)  # Convert float to int for display
             percentage = (count / len(self.df)) * 100
             print(f"   {sentiment_map.get(cat_int, 'Unknown'):10s} ({cat_int:2d}): {count:6d} ({percentage:5.2f}%)")
-        
+
         # Text length analysis
         self.df['text_length'] = self.df['clean_text'].fillna('').apply(len)
         self.df['word_count'] = self.df['clean_text'].fillna('').apply(lambda x: len(str(x).split()))
-        
+
         print("\n4. Text Statistics:")
         print(f"   Average text length: {self.df['text_length'].mean():.2f} characters")
         print(f"   Average word count: {self.df['word_count'].mean():.2f} words")
         print(f"   Max text length: {self.df['text_length'].max()} characters")
         print(f"   Min text length: {self.df['text_length'].min()} characters")
-        
+
         # Visualizations
         self.create_eda_visualizations()
         
     def create_eda_visualizations(self):
         """Create EDA visualizations"""
-        # First, drop rows with missing categories for visualization
-        df_viz = self.df.dropna(subset=['category']).copy()
-        df_viz['category'] = df_viz['category'].astype(int)
-        
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         
         # Sentiment distribution
         sentiment_map = {-1: 'Negative', 0: 'Neutral', 1: 'Positive'}
-        df_viz['sentiment_label'] = df_viz['category'].map(sentiment_map)
+        self.df['sentiment_label'] = self.df['category'].map(sentiment_map)
         
         ax1 = axes[0, 0]
-        df_viz['sentiment_label'].value_counts().plot(kind='bar', ax=ax1, color=['#e74c3c', '#95a5a6', '#2ecc71'])
+        self.df['sentiment_label'].value_counts().plot(kind='bar', ax=ax1, color=['#e74c3c', '#95a5a6', '#2ecc71'])
         ax1.set_title('Sentiment Distribution', fontsize=14, fontweight='bold')
         ax1.set_xlabel('Sentiment')
         ax1.set_ylabel('Count')
@@ -268,7 +238,7 @@ class TwitterSentimentAnalyzer:
         # Text length distribution by sentiment
         ax2 = axes[0, 1]
         for sentiment in ['Negative', 'Neutral', 'Positive']:
-            subset = df_viz[df_viz['sentiment_label'] == sentiment]['text_length']
+            subset = self.df[self.df['sentiment_label'] == sentiment]['text_length']
             ax2.hist(subset, alpha=0.5, label=sentiment, bins=50)
         ax2.set_title('Text Length Distribution by Sentiment', fontsize=14, fontweight='bold')
         ax2.set_xlabel('Text Length')
@@ -277,16 +247,16 @@ class TwitterSentimentAnalyzer:
         
         # Word count distribution
         ax3 = axes[1, 0]
-        ax3.hist(df_viz['word_count'], bins=50, color='skyblue', edgecolor='black')
+        ax3.hist(self.df['word_count'], bins=50, color='skyblue', edgecolor='black')
         ax3.set_title('Word Count Distribution', fontsize=14, fontweight='bold')
         ax3.set_xlabel('Word Count')
         ax3.set_ylabel('Frequency')
-        ax3.axvline(df_viz['word_count'].mean(), color='red', linestyle='--', label=f'Mean: {df_viz["word_count"].mean():.0f}')
+        ax3.axvline(self.df['word_count'].mean(), color='red', linestyle='--', label=f'Mean: {self.df["word_count"].mean():.0f}')
         ax3.legend()
         
         # Box plot of text length by sentiment
         ax4 = axes[1, 1]
-        df_viz.boxplot(column='text_length', by='sentiment_label', ax=ax4)
+        self.df.boxplot(column='text_length', by='sentiment_label', ax=ax4)
         ax4.set_title('Text Length by Sentiment (Box Plot)', fontsize=14, fontweight='bold')
         ax4.set_xlabel('Sentiment')
         ax4.set_ylabel('Text Length')
@@ -295,9 +265,9 @@ class TwitterSentimentAnalyzer:
         
         plt.suptitle('')  # Remove the default title
         plt.tight_layout()
-        plt.savefig('eda_visualization.png', dpi=300, bbox_inches='tight')
+        # plt.savefig('eda_visualization.png', dpi=300, bbox_inches='tight')
         plt.show()
-        
+
     def preprocess_text(self, text):
         """
         Preprocess individual text
@@ -323,8 +293,8 @@ class TwitterSentimentAnalyzer:
         # Remove extra whitespace
         text = ' '.join(text.split())
         
-        # Tokenize (simple split-based tokenization)
-        tokens = text.split()
+        # Tokenize
+        tokens = word_tokenize(text)
         
         # Remove stopwords
         tokens = [token for token in tokens if token not in self.stop_words and len(token) > 2]
@@ -339,16 +309,17 @@ class TwitterSentimentAnalyzer:
         
         # Handle missing values
         print("Handling missing values...")
+        original_len = len(self.df)
+        self.df = self.df.dropna()
+        removed = original_len - len(self.df)
+        print(f"Removed {removed} empty texts")
+
         self.df['clean_text'] = self.df['clean_text'].fillna('')
-        # Drop rows with missing categories
-        self.df = self.df.dropna(subset=['category'])
-        # Convert category to int
-        self.df['category'] = self.df['category'].astype(int)
         
         # Apply preprocessing
         print("Preprocessing text (this may take a while)...")
         self.df['processed_text'] = self.df['clean_text'].apply(self.preprocess_text)
-        
+
         # Remove empty texts after preprocessing
         original_len = len(self.df)
         self.df = self.df[self.df['processed_text'].str.len() > 0]
@@ -363,23 +334,11 @@ class TwitterSentimentAnalyzer:
         print("PREPARING TF-IDF FEATURES")
         print("=" * 80)
         
-        # Adjust max_features based on dataset size
-        dataset_size = len(self.df)
-        if self.development_mode or dataset_size <= 1000:
-            max_features = 500
-            print(f"📝 Using {max_features} features (small dataset mode)")
-        elif dataset_size <= 5000:
-            max_features = 1000
-            print(f"📝 Using {max_features} features (medium dataset mode)")
-        else:
-            max_features = 5000
-            print(f"📝 Using {max_features} features (full dataset mode)")
-        
         # Initialize TF-IDF Vectorizer
         self.tfidf_vectorizer = TfidfVectorizer(
-            max_features=max_features,
+            max_features=5000,
             ngram_range=(1, 2),
-            min_df=2 if dataset_size <= 1000 else 5,
+            min_df=5,
             max_df=0.95
         )
         
@@ -465,34 +424,14 @@ class TwitterSentimentAnalyzer:
         
         results = {}
         
-        # Determine if we should use simplified parameters for small datasets
-        use_simple_params = (
-            self.development_mode or 
-            (self.sample_size is not None and self.sample_size <= 5000) or
-            get_num_samples(X_train) <= 5000
-        )
-        
-        if use_simple_params:
-            print("📝 Using simplified hyperparameters for faster execution")
-            
         # 1. Decision Tree
         print("\n1. Training Decision Tree with GridSearchCV...")
-        
-        if use_simple_params:
-            # Simplified parameters for small datasets
-            dt_params = {
-                'max_depth': [5, 10, None],
-                'min_samples_split': [2, 5],
-                'criterion': ['gini', 'entropy']
-            }
-        else:
-            # Full parameters for large datasets
-            dt_params = {
-                'max_depth': [10, 20, 30, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4],
-                'criterion': ['gini', 'entropy']
-            }
+        dt_params = {
+            'max_depth': [10, 20, 30, None],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4],
+            'criterion': ['gini', 'entropy']
+        }
         
         dt_grid = GridSearchCV(
             DecisionTreeClassifier(random_state=self.random_state),
@@ -520,20 +459,11 @@ class TwitterSentimentAnalyzer:
         
         # 2. K-Nearest Neighbors
         print("\n2. Training KNN with GridSearchCV...")
-        
-        if use_simple_params:
-            # Simplified parameters for small datasets
-            knn_params = {
-                'n_neighbors': [3, 5, 7],
-                'weights': ['uniform', 'distance']
-            }
-        else:
-            # Full parameters for large datasets
-            knn_params = {
-                'n_neighbors': [3, 5, 7, 9, 11],
-                'weights': ['uniform', 'distance'],
-                'metric': ['euclidean', 'manhattan', 'minkowski']
-            }
+        knn_params = {
+            'n_neighbors': [3, 5, 7, 9, 11],
+            'weights': ['uniform', 'distance'],
+            'metric': ['euclidean', 'manhattan', 'minkowski']
+        }
         
         knn_grid = GridSearchCV(
             KNeighborsClassifier(),
@@ -561,21 +491,11 @@ class TwitterSentimentAnalyzer:
         
         # 3. Logistic Regression
         print("\n3. Training Logistic Regression with GridSearchCV...")
-        
-        if use_simple_params:
-            # Simplified parameters for small datasets
-            lr_params = {
-                'C': [0.1, 1, 10],
-                'solver': ['liblinear', 'lbfgs'],
-                'max_iter': [100]
-            }
-        else:
-            # Full parameters for large datasets
-            lr_params = {
-                'C': [0.001, 0.01, 0.1, 1, 10, 100],
-                'solver': ['liblinear', 'lbfgs'],
-                'max_iter': [100, 200, 500]
-            }
+        lr_params = {
+            'C': [0.001, 0.01, 0.1, 1, 10, 100],
+            'solver': ['liblinear', 'lbfgs'],
+            'max_iter': [100, 200, 500]
+        }
         
         lr_grid = GridSearchCV(
             LogisticRegression(random_state=self.random_state, multi_class='ovr'),
@@ -632,22 +552,10 @@ class TwitterSentimentAnalyzer:
         print("PREPARING DATA FOR NEURAL NETWORK")
         print("=" * 80)
         
-        # Adjust parameters based on dataset size
-        dataset_size = len(self.df)
-        if self.development_mode or dataset_size <= 1000:
-            max_words = 1000
-            max_len = 50
-            print(f"📝 Using simplified NN parameters (vocab={max_words}, max_len={max_len})")
-        elif dataset_size <= 5000:
-            max_words = 5000
-            max_len = 75
-            print(f"📝 Using medium NN parameters (vocab={max_words}, max_len={max_len})")
-        else:
-            max_words = 10000
-            max_len = 100
-            print(f"📝 Using full NN parameters (vocab={max_words}, max_len={max_len})")
-        
         # Initialize tokenizer
+        max_words = 10000
+        max_len = 100
+        
         self.tokenizer = Tokenizer(num_words=max_words)
         self.tokenizer.fit_on_texts(self.df['processed_text'])
         
@@ -663,7 +571,7 @@ class TwitterSentimentAnalyzer:
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y_categorical, test_size=0.2, random_state=self.random_state, 
+            X, y_categorical, test_size=0.2, random_state=self.random_state,
             stratify=y
         )
         
@@ -688,18 +596,20 @@ class TwitterSentimentAnalyzer:
             # Embedding layer
             Embedding(max_words, 128, input_length=max_len),
             
-            # CNN layers
+            # CNN layers (Conv1D)
             Conv1D(filters=64, kernel_size=3, activation='relu'),
             MaxPooling1D(pool_size=2),
-            Dropout(0.3),
-            
+            Dropout(0.3),  # incris to reduce overfiting
+
             # LSTM layer
-            LSTM(64, return_sequences=False, dropout=0.3, recurrent_dropout=0.3),
+            LSTM(64, return_sequences=False,
+                 dropout=0.3, # incrised to reduce overfiting
+                 recurrent_dropout=0.3), # incris to reduce overfiting
             
             # Dense layers
             Dense(32, activation='relu'),
             BatchNormalization(),
-            Dropout(0.4),
+            Dropout(0.4), # incrised to reduce overfiting
             
             # Output layer
             Dense(3, activation='softmax')
@@ -720,32 +630,18 @@ class TwitterSentimentAnalyzer:
         print("TRAINING CNN-LSTM NEURAL NETWORK")
         print("=" * 80)
         
-        # Adjust parameters based on dataset size
-        dataset_size = get_num_samples(X_train)
-        if self.development_mode or dataset_size <= 1000:
-            epochs = 3
-            batch_size = 16
-            print("📝 Using simplified neural network training (3 epochs, batch_size=16)")
-        elif dataset_size <= 5000:
-            epochs = 5
-            batch_size = 32
-            print("📝 Using medium neural network training (5 epochs, batch_size=32)")
-        else:
-            epochs = 10
-            batch_size = 32
-            print("📝 Using full neural network training (10 epochs, batch_size=32)")
-        
         # Build model
         model = self.build_cnn_lstm_model(max_words, max_len)
         
         print("\nModel Architecture:")
+        model.build(input_shape=X_train.shape)
         model.summary()
         
         # Callbacks
+
         callbacks = [
-            EarlyStopping(monitor='val_loss', patience=2 if dataset_size <= 5000 else 3, 
-                         restore_best_weights=True),
-            ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss'),
+            EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True),
+            ModelCheckpoint('../Draft/best_model.keras', save_best_only=True, monitor='val_loss'),
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.00001)
         ]
         
@@ -753,8 +649,8 @@ class TwitterSentimentAnalyzer:
         print("\nTraining model...")
         history = model.fit(
             X_train, y_train,
-            batch_size=batch_size,
-            epochs=epochs,
+            batch_size=32,
+            epochs=10,
             validation_split=0.1,
             callbacks=callbacks,
             verbose=1
@@ -813,7 +709,7 @@ class TwitterSentimentAnalyzer:
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig('nn_training_history.png', dpi=300, bbox_inches='tight')
+        # plt.savefig('nn_training_history.png', dpi=300, bbox_inches='tight')
         plt.show()
     
     def evaluate_model(self, y_true, y_pred, model_name):
@@ -858,8 +754,8 @@ class TwitterSentimentAnalyzer:
         plt.xlabel('Predicted')
         plt.ylabel('Actual')
         plt.tight_layout()
-        plt.savefig(f'confusion_matrix_{model_name.lower().replace(" ", "_")}.png', 
-                   dpi=300, bbox_inches='tight')
+        # plt.savefig(f'confusion_matrix_{model_name.lower().replace(" ", "_")}.png',
+        #            dpi=300, bbox_inches='tight')
         plt.show()
         
         return {
@@ -937,7 +833,7 @@ class TwitterSentimentAnalyzer:
         plt.legend(loc="lower right")
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig('roc_curves.png', dpi=300, bbox_inches='tight')
+        # plt.savefig('roc_curves.png', dpi=300, bbox_inches='tight')
         plt.show()
     
     def create_comparison_table(self, all_results):
@@ -1017,7 +913,7 @@ class TwitterSentimentAnalyzer:
             ax2.text(v + 0.001, i, f'{v:.3f}', va='center')
         
         plt.tight_layout()
-        plt.savefig('model_comparison.png', dpi=300, bbox_inches='tight')
+        # plt.savefig('model_comparison.png', dpi=300, bbox_inches='tight')
         plt.show()
     
     def save_models(self, all_results):
@@ -1067,19 +963,19 @@ class TwitterSentimentAnalyzer:
         
         # 1. Load data
         self.load_data()
-        
-        # 1.5. Sample dataset if specified (for faster development/testing)
-        self.sample_dataset()
-        
+
         # 2. Perform EDA
         self.perform_eda()
         
         # 3. Preprocess data
         self.preprocess_data()
-        
+
+        # 3.5. Sample dataset if specified (for faster development/testing)
+        self.sample_dataset()
+
         # Store all results
         all_results = {}
-        
+
         # 4. TF-IDF Features Pipeline
         print("\n" + "#" * 80)
         print("TFIDF FEATURE PIPELINE")
@@ -1088,16 +984,16 @@ class TwitterSentimentAnalyzer:
         tfidf_results = self.train_classical_models(
             X_train_tfidf, X_test_tfidf, y_train, y_test, 'tfidf'
         )
-        
+
         # Evaluate each TF-IDF model
         for model_name, results in tfidf_results.items():
             eval_metrics = self.evaluate_model(
                 y_test, results['predictions'], f"{model_name} (TF-IDF)"
             )
             tfidf_results[model_name].update(eval_metrics)
-        
+
         all_results['TF-IDF'] = tfidf_results
-        
+
         # 5. Word2Vec Features Pipeline
         print("\n" + "#" * 80)
         print("WORD2VEC FEATURE PIPELINE")
@@ -1106,16 +1002,16 @@ class TwitterSentimentAnalyzer:
         w2v_results = self.train_classical_models(
             X_train_w2v, X_test_w2v, y_train, y_test, 'word2vec'
         )
-        
+
         # Evaluate each Word2Vec model
         for model_name, results in w2v_results.items():
             eval_metrics = self.evaluate_model(
                 y_test, results['predictions'], f"{model_name} (Word2Vec)"
             )
             w2v_results[model_name].update(eval_metrics)
-        
+
         all_results['Word2Vec'] = w2v_results
-        
+
         # 6. Neural Network Pipeline
         print("\n" + "#" * 80)
         print("NEURAL NETWORK PIPELINE")
@@ -1124,39 +1020,39 @@ class TwitterSentimentAnalyzer:
         nn_results = self.train_neural_network(
             X_train_nn, X_test_nn, y_train_nn, y_test_nn, max_words, max_len
         )
-        
+
         # Evaluate neural network
         eval_metrics = self.evaluate_model(
             nn_results['true_labels'], nn_results['predictions'], "CNN-LSTM Neural Network"
         )
         nn_results.update(eval_metrics)
-        
+
         all_results['Neural Network'] = {'CNN-LSTM': nn_results}
-        
+
         # 7. Create comparison table
         comparison_df = self.create_comparison_table(all_results)
-        
+
         # 8. Plot ROC curves (for models with probability predictions)
         self.plot_roc_curves(tfidf_results, y_test)
-        
-        # 9. Save models
-        self.save_models(all_results)
-        
+
+        # # 9. Save models
+        # self.save_models(all_results)
+
         # 10. Final summary
         print("\n" + "=" * 80)
         print("PIPELINE COMPLETED SUCCESSFULLY!")
         print("=" * 80)
         print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("\nGenerated files:")
-        print("  - eda_visualization.png")
-        print("  - nn_training_history.png")
-        print("  - confusion_matrix_*.png (for each model)")
-        print("  - roc_curves.png")
-        print("  - model_comparison.png")
-        print("  - model_comparison.csv")
-        print("  - models/ directory with saved models")
-        print("  - best_model.h5 (best neural network weights)")
-        
+        # print("\nGenerated files:")
+        # print("  - eda_visualization.png")
+        # print("  - nn_training_history.png")
+        # print("  - confusion_matrix_*.png (for each model)")
+        # print("  - roc_curves.png")
+        # print("  - model_comparison.png")
+        # print("  - model_comparison.csv")
+        # print("  - models/ directory with saved models")
+        # print("  - best_model.keras (best neural network weights)")
+
         # Identify best model
         print("\n" + "=" * 80)
         print("BEST MODEL")
@@ -1165,33 +1061,18 @@ class TwitterSentimentAnalyzer:
         print(f"Best performing model: {best_model_idx['Model']} with {best_model_idx['Feature Type']} features")
         print(f"  - Accuracy: {best_model_idx['Accuracy']}")
         print(f"  - F1-Macro: {best_model_idx['F1-Macro']}")
-        
+
         return all_results, comparison_df
 
 def main():
     """Main execution function"""
     parser = argparse.ArgumentParser(
-        description='Twitter Sentiment Analysis Pipeline',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Run with full dataset (default)
-  python twitter_sentiment_main.py
-  
-  # Run with 100 samples for quick testing
-  python twitter_sentiment_main.py --sample-size 100
-  
-  # Run in development mode (1000 samples, simplified parameters)
-  python twitter_sentiment_main.py --dev
-  
-  # Run with custom sample size
-  python twitter_sentiment_main.py --sample-size 5000
-        """
+        description='Twitter Sentiment Analysis Pipeline'
     )
     parser.add_argument(
         '--data_path',
         type=str,
-        default=DEFAULT_DATA_PATH,
+        default=DATA_PATH,
         help='Path to the Twitter dataset CSV file'
     )
     parser.add_argument(
@@ -1200,55 +1081,13 @@ Examples:
         default=42,
         help='Random state for reproducibility'
     )
-    parser.add_argument(
-        '--sample-size',
-        type=int,
-        default=None,
-        help='Number of samples to use (default: 100, set <=0 to use full dataset)'
-    )
-    parser.add_argument(
-        '--dev',
-        action='store_true',
-        help='Development mode: uses 1000 samples and simplified parameters for fast testing'
-    )
     
     args = parser.parse_args()
-    effective_sample_size = args.sample_size
-    full_dataset_requested = effective_sample_size is not None and effective_sample_size <= 0
-    if full_dataset_requested:
-        effective_sample_size = None
-    
-    # Print configuration
-    print("\n" + "=" * 80)
-    print("CONFIGURATION")
-    print("=" * 80)
-    
-    if args.dev:
-        print("DEVELOPMENT MODE ENABLED")
-        print("   - Default sample size: 1,000 (unless overridden)")
-        print("   - Simplified hyperparameters for faster execution")
-        if not full_dataset_requested and effective_sample_size is None:
-            effective_sample_size = 1000
-        if full_dataset_requested:
-            print("FULL DATASET MODE REQUESTED")
-        else:
-            print(f"SAMPLE MODE: Using {effective_sample_size:,} samples")
-    else:
-        if full_dataset_requested:
-            print("FULL DATASET MODE")
-        else:
-            if effective_sample_size is None:
-                effective_sample_size = DEFAULT_SAMPLE_SIZE
-                print(f"DEFAULT SAMPLE MODE: Using {effective_sample_size:,} samples")
-            else:
-                print(f"SAMPLE MODE: Using {effective_sample_size:,} samples")
     
     # Initialize analyzer
     analyzer = TwitterSentimentAnalyzer(
         data_path=args.data_path,
-        random_state=args.random_state,
-        sample_size=effective_sample_size,
-        development_mode=args.dev
+        random_state=args.random_state
     )
     
     # Run pipeline
